@@ -142,6 +142,30 @@ console.log(result.finalResponse?.content);
 npm run example:execute
 ```
 
+### Telemetry
+
+Every `executor.execute()` call can optionally write one structured JSONL record to a local file for post-hoc analysis.
+
+Enable via environment variables:
+
+```bash
+ROUTING_TELEMETRY_ENABLED=true
+ROUTING_TELEMETRY_LOG_PATH=./logs/router-decisions.jsonl
+```
+
+```ts
+import { TelemetrySink, buildTelemetryConfigFromEnv, createExecutor, createLiveProvidersFromEnv } from './src/index.js';
+
+const { enabled, logPath } = buildTelemetryConfigFromEnv();
+const sink = new TelemetrySink(logPath, enabled);
+const executor = createExecutor(providers, config, sink); // sink is optional
+
+const result = await executor.execute({ prompt: '...' });
+// One JSON line is appended to logPath after each execute() call
+```
+
+Each event records: timestamp, task class, selected provider/tier/model, confidence, review/escalation flags, verification outcome, token usage (if available), final outcome, task domain, and task complexity. Raw prompts are never logged.
+
 ## Verification checks
 
 The verifier runs deterministic checks for:

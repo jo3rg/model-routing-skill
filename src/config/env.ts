@@ -1,6 +1,19 @@
 import { DEFAULT_ROUTER_CONFIG } from './defaults.js';
 import type { ProviderName, RouterConfig } from '../types/index.js';
 
+export interface TelemetryConfig {
+  enabled: boolean;
+  logPath: string;
+}
+
+export function buildTelemetryConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): TelemetryConfig {
+  const enabled = (env.ROUTING_TELEMETRY_ENABLED ?? 'true').toLowerCase() === 'true';
+  const logPath = env.ROUTING_TELEMETRY_LOG_PATH ?? './logs/router-decisions.jsonl';
+  return { enabled, logPath };
+}
+
 export interface ProviderSecrets {
   openai?: { apiKey: string; baseUrl: string };
   minimax?: { apiKey: string; baseUrl: string };

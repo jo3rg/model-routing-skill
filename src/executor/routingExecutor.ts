@@ -2,14 +2,21 @@ import { DEFAULT_ROUTER_CONFIG } from '../config/defaults.js';
 import { buildMessages } from '../providers/base.js';
 import { DeterministicRouter } from '../router/deterministicRouter.js';
 import type {
+  DomainSignals,
   ExecutionResult,
+  FinalOutcome,
   ModelTier,
   ProviderRegistry,
   RouterConfig,
   RoutingTask,
+  TaskDomain,
+  TaskComplexity,
+  TelemetryEvent,
+  TokenUsage,
   VerificationReport,
 } from '../types/index.js';
 import { RuleBasedVerifier } from '../verifier/ruleBasedVerifier.js';
+import type { TelemetrySink } from '../telemetry/telemetrySink.js';
 
 const SYSTEM_PROMPT = [
   'You are an execution model in a deterministic routing pipeline.',
@@ -20,13 +27,16 @@ const SYSTEM_PROMPT = [
 export class RoutingExecutor {
   private readonly router: DeterministicRouter;
   private readonly verifier: RuleBasedVerifier;
+  private readonly sink: TelemetrySink | undefined;
 
   constructor(
     private readonly providers: ProviderRegistry,
     private readonly config: RouterConfig = DEFAULT_ROUTER_CONFIG,
+    sink?: TelemetrySink,
   ) {
     this.router = new DeterministicRouter(config);
     this.verifier = new RuleBasedVerifier(config);
+    this.sink = sink;
   }
 
   async execute(task: RoutingTask): Promise<ExecutionResult> {
@@ -109,6 +119,34 @@ export class RoutingExecutor {
       result.reviewResponse = reviewResponse;
     }
 
+    // Emit telemetry event once per execute() call using final outcome state
+    if (this.sink) {
+      const finalOutcome = this.computeFinalOutcome(decision, escalated, verification.overallPass);
+      const tokenUsage = this.computeTokenUsage(finalResponse?.usage);
+
+      const event: TelemetryEvent = {
+        timestamp: new Date().toISOString(),
+        task_class: decision.task_class,
+        selected_provider: decision.selected_provider,
+        selected_model_tier: decision.selected_model_tier,
+        selected_model_id: decision.selected_model_id,
+        confidence: decision.confidence,
+        review_required: decision.review_required,
+        escalation_needed: escalated,
+        verification_pass: verification.overallPass,
+        verification_summary: verification.summary,
+        final_outcome: finalOutcome,
+        task_domain: this.deriveTaskDomain(decision.domain_signals),
+        task_complexity: this.deriveTaskComplexity(decision.confidence),
+      };
+
+      if (tokenUsage) {
+        event.token_usage = tokenUsage;
+      }
+
+      this.sink.append(event);
+    }
+
     return result;
   }
 
@@ -122,6 +160,42 @@ export class RoutingExecutor {
     }
 
     return 'openai_review';
+  }
+
+  private computeFinalOutcome(
+    decision: { review_required: boolean },
+    escalated: boolean,
+    verificationPassed: boolean,
+  ): FinalOutcome {
+    if (escalated) {
+      return 'escalated';
+    }
+    if (decision.review_required || !verificationPassed) {
+      return 'review_required';
+    }
+    return 'accepted';
+  }
+
+  private computeTokenUsage(usage?: TokenUsage): TokenUsage | undefined {
+    if (!usage || (usage.promptTokens === undefined && usage.completionTokens === undefined && usage.totalTokens === undefined)) {
+      return undefined;
+    }
+    return usage;
+  }
+
+  private deriveTaskDomain(signals: DomainSignals): TaskDomain {
+    if (signals.velociraptor) return 'velo';
+    if (signals.splunk) return 'splunk';
+    if (signals.coding) return 'coding';
+    if (signals.research) return 'research';
+    return 'general';
+  }
+
+  private deriveTaskComplexity(confidence: number): TaskComplexity {
+    const { low, medium } = this.config.confidenceThresholds;
+    if (confidence <= low) return 'high';
+    if (confidence <= medium) return 'medium';
+    return 'low';
   }
 }
 

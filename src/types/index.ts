@@ -119,6 +119,29 @@ export interface TokenUsage {
   totalTokens?: number;
 }
 
+export type TaskDomain = 'velo' | 'splunk' | 'coding' | 'research' | 'general';
+
+export type TaskComplexity = 'high' | 'medium' | 'low';
+
+export type FinalOutcome = 'accepted' | 'escalated' | 'review_required';
+
+export interface TelemetryEvent {
+  timestamp: string;
+  task_class: TaskClass;
+  selected_provider: ProviderName;
+  selected_model_tier: ModelTier;
+  selected_model_id: string;
+  confidence: number;
+  review_required: boolean;
+  escalation_needed: boolean;
+  verification_pass: boolean;
+  verification_summary: string;
+  token_usage?: TokenUsage;
+  final_outcome: FinalOutcome;
+  task_domain: TaskDomain;
+  task_complexity: TaskComplexity;
+}
+
 export interface ProviderResponse {
   provider: ProviderName;
   modelId: string;
