@@ -1,12 +1,73 @@
+import { createRequire } from 'module';
 import { DEFAULT_ROUTER_CONFIG } from '../config/defaults.js';
 import { DeterministicRouter } from '../router/deterministicRouter.js';
 import type { ExecutionPlanStepResult, ExecutionResult, RouterConfig, RoutingTask } from '../types/index.js';
+
+/** Paths that should trigger Phase 2 cheap-model optimization */
+const CHEAP_PATHS = new Set(['minimax_general', 'minimax_fast', 'openai_general']);
 
 export class RoutingExecutor {
   private readonly router: DeterministicRouter;
 
   constructor(private readonly config: RouterConfig = DEFAULT_ROUTER_CONFIG) {
     this.router = new DeterministicRouter(config);
+  }
+
+  /**
+   * Phase 2 integration: if a cheap model path was selected, run the
+   * cheap-model-optimizer-skill to produce a structured execution brief.
+   * optimizeForCheapModel is synchronous.
+   */
+  private phase2Optimize(task: RoutingTask, decision: import('../types/index.js').RouteDecision): ExecutionResult['phase2_optimization'] | undefined {
+    if (!CHEAP_PATHS.has(decision.selected_model_tier)) return undefined;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let optimizer: { optimizeForCheapModel: (input: { prompt: string; requirements?: string[]; metadata?: Record<string, unknown> }) => { optimized_prompt: string; domain: string; task_complexity: string; decomposition_used: boolean; output_schema: Record<string, unknown>; validation_rules: string[]; confidence_expectation: string; risk_level: string; escalation_signals: string[] } } | undefined;
+
+    try {
+      // Use createRequire for ESM compatibility (sync)
+      const require_ = createRequire(import.meta.url);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      optimizer = require_('/root/.openclaw/workspace/notes/projects/cheap-model-optimizer-skill/dist/index.js') as typeof optimizer;
+    } catch {
+      // Phase 2 optimizer not available — skip optimization silently
+      return undefined;
+    }
+
+    if (!optimizer?.optimizeForCheapModel) return undefined;
+
+    try {
+      const result = optimizer.optimizeForCheapModel({
+        prompt: task.prompt,
+        requirements: task.requirements ?? [],
+        metadata: {
+          productionRelevant: task.metadata?.productionRelevant,
+          securitySensitive: task.metadata?.securitySensitive,
+          constraints: task.metadata?.domainHints ?? [],
+          phase1: {
+            execution_mode: decision.execution_mode,
+            selected_provider: decision.selected_provider,
+            selected_model_id: decision.selected_model_id,
+            domain: decision.domain,
+            rationale: decision.rationale,
+          },
+        },
+      });
+
+      return {
+        optimized_prompt: result.optimized_prompt,
+        domain: result.domain,
+        task_complexity: result.task_complexity,
+        decomposition_used: result.decomposition_used,
+        output_schema: result.output_schema,
+        validation_rules: result.validation_rules,
+        confidence_expectation: result.confidence_expectation,
+        risk_level: result.risk_level,
+        escalation_signals: result.escalation_signals,
+      };
+    } catch {
+      return undefined;
+    }
   }
 
   plan(task: RoutingTask): ExecutionResult {
@@ -108,7 +169,44 @@ export class RoutingExecutor {
     };
   }
 
+  /**
+   * Build plan + run Phase 2 optimization (cheap-model-optimizer-skill).
+   * Returns the plan with Phase 2 optimization results embedded.
+   */
+  planAndOptimize(task: RoutingTask): ExecutionResult {
+    const result = this.plan(task);
+    const phase2 = this.phase2Optimize(task, result.decision);
+    if (phase2) {
+      result.phase2_optimization = phase2;
+      // Inject optimized prompt into the primary model execution step
+      const primaryStep = result.plan.find(
+        (s) => s.phase === 'primary' && CHEAP_PATHS.has(s.tier ?? '')
+      );
+      if (primaryStep) {
+        primaryStep.instructions = [
+          `## Phase 2 Optimized Brief`,
+          `Domain: ${phase2.domain} | Complexity: ${phase2.task_complexity} | Risk: ${phase2.risk_level}`,
+          `Confidence expectation: ${phase2.confidence_expectation}`,
+          phase2.decomposition_used
+            ? `Decomposition: ${(phase2 as unknown as { decomposition_steps?: string[] }).decomposition_steps?.join(' → ') ?? 'used'}`
+            : '',
+          ``,
+          phase2.optimized_prompt,
+          ``,
+          `--- Validation Rules (must be satisfied before acceptance) ---`,
+          ...phase2.validation_rules.map((r) => `- ${r}`),
+          ``,
+          `--- Escalation Signals (trigger OpenAI review if present) ---`,
+          ...(phase2.escalation_signals.length > 0
+            ? phase2.escalation_signals.map((s) => `  ⚠️  ${s}`)
+            : ['  (none)']),
+        ].filter(Boolean);
+      }
+    }
+    return result;
+  }
+
   async execute(task: RoutingTask): Promise<ExecutionResult> {
-    return this.plan(task);
+    return this.planAndOptimize(task);
   }
 }

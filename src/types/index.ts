@@ -304,6 +304,18 @@ export interface ExecutionResult {
   decision: RouteDecision;
   plan: ExecutionPlanStepResult[];
   auditTrail: string[];
+  /** Phase 2 optimization result — present when a cheap model path was selected */
+  phase2_optimization?: {
+    optimized_prompt: string;
+    domain: string;
+    task_complexity: string;
+    decomposition_used: boolean;
+    output_schema: Record<string, unknown>;
+    validation_rules: string[];
+    confidence_expectation: string;
+    risk_level: string;
+    escalation_signals: string[];
+  };
 }
 
 export interface ModelProvider {
