@@ -1,10 +1,10 @@
-import type { ModelProvider, ProviderRequest, ProviderResponse, ProviderName } from '../types/index.js';
+import type { ModelProvider, ProviderRequest, ProviderResponse, RuntimeProviderName } from '../types/index.js';
 
 export class MockProvider implements ModelProvider {
   public readonly calls: ProviderRequest[] = [];
 
   constructor(
-    public readonly name: ProviderName,
+    public readonly name: RuntimeProviderName,
     private readonly responder: (request: ProviderRequest) => string,
   ) {}
 

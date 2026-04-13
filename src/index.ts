@@ -4,12 +4,13 @@ import { MiniMaxProvider } from './providers/minimaxProvider.js';
 import { OpenAIProvider } from './providers/openaiProvider.js';
 import { DeterministicRouter } from './router/deterministicRouter.js';
 import type { ProviderRegistry, RouterConfig } from './types/index.js';
-import type { TelemetrySink } from './telemetry/telemetrySink.js';
 
+export * from './capabilities/index.js';
 export * from './classifier/index.js';
 export * from './config/index.js';
 export * from './escalator/index.js';
 export * from './executor/index.js';
+export * from './normalizer/index.js';
 export * from './providers/index.js';
 export * from './router/index.js';
 export * from './telemetry/index.js';
@@ -20,12 +21,8 @@ export function createRouter(config: RouterConfig = DEFAULT_ROUTER_CONFIG): Dete
   return new DeterministicRouter(config);
 }
 
-export function createExecutor(
-  providers: ProviderRegistry,
-  config: RouterConfig = DEFAULT_ROUTER_CONFIG,
-  sink?: TelemetrySink,
-): RoutingExecutor {
-  return new RoutingExecutor(providers, config, sink);
+export function createExecutor(config: RouterConfig = DEFAULT_ROUTER_CONFIG): RoutingExecutor {
+  return new RoutingExecutor(config);
 }
 
 export function createLiveProvidersFromEnv(config: RouterConfig = buildRouterConfigFromEnv()): ProviderRegistry {

@@ -1,5 +1,5 @@
 import { DEFAULT_ROUTER_CONFIG } from './defaults.js';
-import type { ProviderName, RouterConfig } from '../types/index.js';
+import type { ProviderName, RouterConfig, RuntimeProviderName } from '../types/index.js';
 
 export interface TelemetryConfig {
   enabled: boolean;
@@ -42,7 +42,7 @@ export function buildRouterConfigFromEnv(
 }
 
 export function resolveProviderSecrets(
-  provider: ProviderName,
+  provider: RuntimeProviderName,
   env: NodeJS.ProcessEnv = process.env,
   config: RouterConfig = DEFAULT_ROUTER_CONFIG,
 ): { apiKey: string; baseUrl: string } {

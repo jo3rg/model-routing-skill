@@ -1,3 +1,4 @@
+import { DEFAULT_TRUSTED_SKILLS } from '../capabilities/trustedSkillRegistry.js';
 import type { RouterConfig } from '../types/index.js';
 
 export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
@@ -51,46 +52,22 @@ export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
       apiKeyEnv: 'MINIMAX_API_KEY',
     },
   },
+  trustedSkills: DEFAULT_TRUSTED_SKILLS,
+  capabilityPolicy: {
+    minimumSkillScore: 0.55,
+    reviewSkillAtConfidenceOrBelow: 0.82,
+    preferOpenAIForReasoningAtConfidenceOrBelow: 0.7,
+  },
   escalationPolicy: {
     securityReviewAtConfidenceOrBelow: 0.74,
     productionReviewAtConfidenceOrBelow: 0.74,
     forceReasoningDomains: ['velociraptor', 'splunk', 'research', 'coding', 'debugging'],
-    reviewDomains: ['velociraptor', 'splunk', 'research'],
+    reviewDomains: ['velociraptor', 'splunk', 'research', 'github'],
   },
   verification: {
-    ambiguityPhrases: [
-      'maybe',
-      'probably',
-      'might',
-      'could be',
-      'tbd',
-      'to be determined',
-      'etc.',
-      'and so on',
-      'something like',
-      'roughly',
-    ],
-    weakAssumptionPhrases: [
-      'assuming',
-      'if available',
-      'placeholder',
-      'left as an exercise',
-      'todo',
-      'fill in later',
-      'not sure',
-      'guess',
-    ],
-    unsafeShellPatterns: [
-      'rm -rf /',
-      'chmod 777',
-      'curl | sh',
-      'sudo rm',
-      'iptables -f',
-      'ufw disable',
-      'setenforce 0',
-      'disable auth',
-      'skip verification',
-      'trust all certificates',
-    ],
+    ambiguityPhrases: ['maybe', 'probably', 'might', 'could be', 'tbd', 'to be determined', 'etc.', 'and so on', 'something like', 'roughly'],
+    weakAssumptionPhrases: ['assuming', 'if available', 'placeholder', 'left as an exercise', 'todo', 'fill in later', 'not sure', 'guess'],
+    unsafeShellPatterns: ['rm -rf /', 'chmod 777', 'curl | sh', 'sudo rm', 'iptables -f', 'ufw disable', 'setenforce 0', 'disable auth', 'skip verification', 'trust all certificates'],
+    skillHandoffPhrases: ['files changed', 'tests run', 'artifact', 'queries', 'assumptions', 'next steps', 'validation', 'rollback'],
   },
 };

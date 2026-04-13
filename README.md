@@ -1,57 +1,114 @@
 # model-routing-skill
 
-Deterministic, auditable model routing for OpenClaw workloads that need to choose between MiniMax and OpenAI tiers without hand-wavy heuristics.
+Deterministic, auditable capability routing for OpenClaw workloads.
 
-This repository provides:
-- a rule-based task classifier
-- a deterministic router with explicit escalation rules
-- a response verifier with production-safety checks
-- a provider abstraction for MiniMax and OpenAI
-- a mockable execution pipeline for tests and offline development
-- an installable OpenClaw skill folder that teaches another agent how to use the router
+Phase 1 upgrades this repository from a model-only router into a **capability-first planner**:
 
-## Why this exists
+1. normalize the task lightly
+2. classify task class + domain
+3. choose a trusted specialized skill when it is a better fit than raw model work
+4. choose the model path only after capability selection
+5. return a structured decision object and execution plan
+6. require stronger verification, including post-skill verification when a specialized skill is selected
 
-Most model routers drift toward opaque prompt-based classification. That is flexible, but it is not very auditable. This project deliberately optimizes for:
-- correctness over cost
-- deterministic decisions over hidden classifier behavior
-- explicit escalation over implicit “best effort” fallback
-- verification and review before final delivery for risky work
+This repo deliberately favors **correctness, auditability, and deterministic policy** over opaque prompt heuristics.
 
-## Supported tiers
+## Phase 1 scope
+
+Included in Phase 1:
+- capability selection before model selection
+- trusted-skill allowlist / registry with explicit metadata
+- light task normalization
+- deterministic execution modes
+- structured routing decision objects
+- verification plans with post-skill verification steps
+- domain-aware routing heuristics
+- tests and docs
+
+Explicitly **not** included in Phase 1:
+- no optimizer or learned policy system
+- no auto-discovery of arbitrary skills
+- no hidden fallback chain
+- no skill execution inside the router/executor
+- no self-tuning cost/latency feedback loop
+
+## Execution modes
+
+The router now chooses one of five explicit modes:
+
+| Execution mode | Meaning |
+| --- | --- |
+| `specialized_skill` | use a trusted allowlisted skill only |
+| `specialized_skill_then_openai_review` | use a trusted skill first, then require OpenAI review |
+| `minimax_direct` | send directly to MiniMax with no mandatory review |
+| `minimax_then_openai_review` | let MiniMax draft, then require OpenAI review |
+| `openai_direct` | send directly to OpenAI |
+
+## Supported model tiers
 
 | Tier | Provider | Default model ID | Intended use |
 | --- | --- | --- | --- |
+| `none` | trusted skill | n/a | skill-only path |
 | `minimax_fast` | MiniMax | `MiniMax-M2.1-highspeed` | bounded, low-risk execution |
 | `minimax_general` | MiniMax | `MiniMax-M2.5` | moderate technical work |
-| `openai_general` | OpenAI | `gpt-5.4-mini` | higher-confidence escalation or production-sensitive general work |
-| `openai_reasoning` | OpenAI | `gpt-5.4` | reasoning-critical analysis, debugging, research |
-| `openai_review` | OpenAI | `gpt-5.4` | final review, medium-confidence production/security work |
+| `openai_general` | OpenAI | `gpt-5.4-mini` | direct OpenAI for non-reasoning escalation |
+| `openai_reasoning` | OpenAI | `gpt-5.4` | reasoning-critical analysis and ambiguous work |
+| `openai_review` | OpenAI | `gpt-5.4` | final review gate after skill/MiniMax output |
 
-All model IDs are configurable.
+## Trusted skill registry
 
-## Task classes
+Phase 1 uses an explicit allowlist in `src/capabilities/trustedSkillRegistry.ts`.
 
-- `bounded_execution`
-- `moderate_technical`
-- `reasoning_critical`
-- `final_review_required`
+There is **no** arbitrary skill discovery.
+
+Current allowlisted examples include:
+- `codebase-documenter`
+- `frontend-design`
+- `github`
+- `healthcheck`
+- `dfir-dashboard-designer`
+- `dfir-dashboard-strategist`
+- `dfir-test-automation`
+- `e2e-splunk-validation`
+
+Each entry includes:
+- skill id and location
+- domain coverage
+- trigger phrases
+- artifact focus
+- review preference
+- verification focus
+- handoff requirements
+- examples
 
 ## Decision object
 
-Every routing decision is explicit and auditable:
+Every routing decision is explicit and auditable.
 
 ```ts
 {
   task_class,
+  domain,
+  execution_mode,
   selected_provider,
   selected_model_tier,
   selected_model_id,
+  selected_skill_id,
   confidence,
   review_required,
   escalation_needed,
   rationale,
-  verification_summary
+  verification_plan
+}
+```
+
+Additional review fields are included when a review step is planned:
+
+```ts
+{
+  review_provider,
+  review_model_tier,
+  review_model_id
 }
 ```
 
@@ -63,10 +120,12 @@ model-routing-skill/
 ├── examples/
 ├── skill/model-routing-skill/
 ├── src/
+│   ├── capabilities/
 │   ├── classifier/
 │   ├── config/
 │   ├── escalator/
 │   ├── executor/
+│   ├── normalizer/
 │   ├── providers/
 │   ├── router/
 │   ├── types/
@@ -110,65 +169,43 @@ import { createRouter } from './src/index.js';
 
 const router = createRouter();
 const decision = router.route({
-  prompt: 'Research trade-offs for Splunk dashboard routing and explain the safest policy.',
+  prompt: 'Write a README and onboarding guide for this TypeScript project.',
+  metadata: { expectedArtifact: 'docs' },
 });
 
-console.log(decision);
+console.dir(decision, { depth: null });
 ```
 
-### Execute with live providers
+### Build an execution plan
 
 ```ts
-import { buildRouterConfigFromEnv, createExecutor, createLiveProvidersFromEnv } from './src/index.js';
+import { createExecutor } from './src/index.js';
 
-const config = buildRouterConfigFromEnv();
-const providers = createLiveProvidersFromEnv(config);
-const executor = createExecutor(providers, config);
-
+const executor = createExecutor();
 const result = await executor.execute({
   prompt: 'Fix the TypeScript routing bug and add a regression test.',
   requirements: ['Fix the bug', 'Add a regression test'],
   metadata: { expectedArtifact: 'code' },
 });
 
-console.log(result.decision);
-console.log(result.verification.summary);
-console.log(result.finalResponse?.content);
+console.dir(result.decision, { depth: null });
+console.dir(result.plan, { depth: null });
 ```
 
-### Execute with mocks
+**Important:** in Phase 1, `execute()` builds the deterministic plan. It does **not** run skills inside the router/executor.
+
+### Examples
 
 ```bash
+npm run example:basic
 npm run example:execute
 ```
 
-### Telemetry
+## Verification
 
-Every `executor.execute()` call can optionally write one structured JSONL record to a local file for post-hoc analysis.
+Verification is stronger than the original model-only router.
 
-Enable via environment variables:
-
-```bash
-ROUTING_TELEMETRY_ENABLED=true
-ROUTING_TELEMETRY_LOG_PATH=./logs/router-decisions.jsonl
-```
-
-```ts
-import { TelemetrySink, buildTelemetryConfigFromEnv, createExecutor, createLiveProvidersFromEnv } from './src/index.js';
-
-const { enabled, logPath } = buildTelemetryConfigFromEnv();
-const sink = new TelemetrySink(logPath, enabled);
-const executor = createExecutor(providers, config, sink); // sink is optional
-
-const result = await executor.execute({ prompt: '...' });
-// One JSON line is appended to logPath after each execute() call
-```
-
-Each event records: timestamp, task class, selected provider/tier/model, confidence, review/escalation flags, verification outcome, token usage (if available), final outcome, task domain, and task complexity. Raw prompts are never logged.
-
-## Verification checks
-
-The verifier runs deterministic checks for:
+Core checks:
 - requirement coverage
 - internal consistency
 - syntax plausibility
@@ -177,22 +214,29 @@ The verifier runs deterministic checks for:
 - domain-specific quality
 - production-safety review
 
+Additional Phase 1 skill checks:
+- `skill_output_contract`
+- `post_skill_handoff_quality`
+
+The router also returns a structured `verification_plan` so downstream executors know which stages must run.
+
 ## Tests and quality gates
 
 ```bash
 npm run build
-npm run test
+npm test
 npm run verify
 ```
 
-## Docs
+## Key docs
 
-- `docs/design.md` — research summary, design choices, architecture
-- `docs/routing-policy.md` — exact routing and escalation rules
+- `docs/phase1-capability-routing.md` — Phase 1 architecture and flow
+- `docs/trusted-skill-policy.md` — allowlist rules and review policy
+- `docs/routing-policy.md` — routing and execution-mode policy
 - `docs/examples.md` — scenario walkthroughs
 
 ## OpenClaw skill
 
 The reusable skill lives in `skill/model-routing-skill/SKILL.md`.
 
-Use it when another OpenClaw agent needs deterministic provider/model selection, review gating, or verifiable routing policy instead of an opaque prompt-based router.
+Use it when another OpenClaw agent needs deterministic capability/model selection, review gating, and explicit verification planning instead of an opaque router.

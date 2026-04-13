@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { DeterministicRouter } from '../src/router/deterministicRouter.js';
 import { RuleBasedVerifier } from '../src/verifier/ruleBasedVerifier.js';
 
 describe('RuleBasedVerifier', () => {
   const verifier = new RuleBasedVerifier();
+  const router = new DeterministicRouter();
 
   it('passes a plausible coding response', () => {
     const report = verifier.verify(
@@ -36,13 +38,31 @@ describe('RuleBasedVerifier', () => {
     expect(report.failedChecks).toContain('production_safety_review');
   });
 
-  it('checks Splunk-specific output quality', () => {
+  it('adds post-skill verification for trusted skill outputs', () => {
+    const task = {
+      prompt: 'Write a README and architecture guide for this repository.',
+      requirements: ['Write a README', 'Explain architecture'],
+      metadata: { expectedArtifact: 'docs' as const },
+    };
+    const decision = router.route(task);
+
     const report = verifier.verify(
-      { prompt: 'Write a Splunk SPL query for failed logins.' },
-      'Use `index=auth sourcetype=linux_secure | stats count by user` to summarize failed logins.',
+      task,
+      [
+        'README section updated with installation and usage.',
+        'Architecture section added with system overview.',
+        'Files changed: README.md, docs/architecture.md',
+        'Audience: new contributors.',
+        'Sections added: installation, usage, architecture.',
+        'Examples: CLI quickstart.',
+        'Validation: checked headings and links.',
+      ].join('\n'),
+      decision,
     );
 
-    const domainCheck = report.checks.find((check) => check.name === 'domain_specific_quality');
-    expect(domainCheck?.passed).toBe(true);
+    expect(decision.selected_skill_id).toBe('codebase-documenter');
+    expect(report.checks.some((check) => check.name === 'skill_output_contract')).toBe(true);
+    expect(report.checks.some((check) => check.name === 'post_skill_handoff_quality')).toBe(true);
+    expect(report.overallPass).toBe(true);
   });
 });

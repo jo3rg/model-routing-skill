@@ -1,228 +1,114 @@
 import { DEFAULT_ROUTER_CONFIG } from '../config/defaults.js';
-import { buildMessages } from '../providers/base.js';
 import { DeterministicRouter } from '../router/deterministicRouter.js';
-import type {
-  DomainSignals,
-  ExecutionResult,
-  FinalOutcome,
-  ModelTier,
-  ProviderRegistry,
-  RouterConfig,
-  RoutingTask,
-  TaskDomain,
-  TaskComplexity,
-  TelemetryEvent,
-  TokenUsage,
-  VerificationReport,
-} from '../types/index.js';
-import { RuleBasedVerifier } from '../verifier/ruleBasedVerifier.js';
-import type { TelemetrySink } from '../telemetry/telemetrySink.js';
-
-const SYSTEM_PROMPT = [
-  'You are an execution model in a deterministic routing pipeline.',
-  'Follow the task exactly, cover requirements explicitly, avoid vague language, and surface assumptions.',
-  'Prefer precise, auditable answers over marketing language.',
-].join(' ');
+import type { ExecutionPlanStepResult, ExecutionResult, RouterConfig, RoutingTask } from '../types/index.js';
 
 export class RoutingExecutor {
   private readonly router: DeterministicRouter;
-  private readonly verifier: RuleBasedVerifier;
-  private readonly sink: TelemetrySink | undefined;
 
-  constructor(
-    private readonly providers: ProviderRegistry,
-    private readonly config: RouterConfig = DEFAULT_ROUTER_CONFIG,
-    sink?: TelemetrySink,
-  ) {
+  constructor(private readonly config: RouterConfig = DEFAULT_ROUTER_CONFIG) {
     this.router = new DeterministicRouter(config);
-    this.verifier = new RuleBasedVerifier(config);
-    this.sink = sink;
+  }
+
+  plan(task: RoutingTask): ExecutionResult {
+    const decision = this.router.route(task);
+    const auditTrail: string[] = [
+      `Capability-first routing selected mode ${decision.execution_mode}.`,
+      `Primary selection: ${decision.selected_provider}/${decision.selected_model_tier}${decision.selected_skill_id ? ` with skill ${decision.selected_skill_id}` : ''}.`,
+    ];
+
+    const plan: ExecutionPlanStepResult[] = [];
+    let step = 1;
+
+    plan.push({
+      step: step++,
+      actor: 'system',
+      phase: 'preflight',
+      title: 'Normalize and preflight',
+      objective: 'Lock the normalized task and explicit requirements before execution.',
+      instructions: [
+        `Normalized prompt: ${decision.normalized_task.normalized_prompt}`,
+        `Task class: ${decision.task_class}`,
+        `Domain: ${decision.domain}`,
+        'Preserve the decision object for later audit and review steps.',
+      ],
+    });
+
+    if (decision.selected_skill_id) {
+      plan.push({
+        step: step++,
+        actor: 'trusted_skill',
+        phase: 'primary',
+        title: `Run trusted skill ${decision.selected_skill_id}`,
+        objective: 'Use the allowlisted skill as the primary capability instead of routing directly to a model.',
+        skill_id: decision.selected_skill_id,
+        instructions: [
+          'Pass the original prompt, requirements, and metadata to the trusted skill.',
+          'Do not auto-discover other skills or mutate the allowlist.',
+          'Collect a structured handoff with changed files, assumptions, and verification notes.',
+        ],
+      });
+      auditTrail.push(`Plan includes trusted skill ${decision.selected_skill_id}.`);
+    } else if (decision.selected_provider !== 'trusted_skill') {
+      plan.push({
+        step: step++,
+        actor: decision.selected_provider,
+        phase: 'primary',
+        title: `Primary ${decision.selected_provider} execution`,
+        objective: 'Run the selected model tier exactly once for the primary answer.',
+        tier: decision.selected_model_tier,
+        instructions: [
+          `Use model tier ${decision.selected_model_tier}${decision.selected_model_id ? ` (${decision.selected_model_id})` : ''}.`,
+          'Preserve raw output for verification and possible review.',
+          'Do not silently change tiers during execution.',
+        ],
+      });
+      auditTrail.push(`Plan includes primary provider ${decision.selected_provider}/${decision.selected_model_tier}.`);
+    }
+
+    for (const verification of decision.verification_plan) {
+      if (verification.phase === 'preflight' || verification.phase === 'acceptance') {
+        // represented separately
+      }
+
+      if (verification.phase === 'post_skill' || verification.phase === 'post_model' || verification.phase === 'openai_review') {
+        plan.push({
+          step: step++,
+          actor: verification.phase === 'openai_review' ? 'openai' : 'system',
+          phase: verification.phase,
+          title: verification.name,
+          objective: verification.description,
+          ...(verification.phase === 'openai_review' && decision.review_model_tier ? { tier: decision.review_model_tier } : {}),
+          instructions: [
+            `Run checks: ${verification.checks.join(', ')}.`,
+            verification.phase === 'openai_review'
+              ? `Use review tier ${decision.review_model_tier}${decision.review_model_id ? ` (${decision.review_model_id})` : ''}.`
+              : 'Record failures explicitly; do not paper over ambiguous or unsafe output.',
+          ],
+        });
+      }
+    }
+
+    plan.push({
+      step: step++,
+      actor: 'system',
+      phase: 'acceptance',
+      title: 'Final acceptance gate',
+      objective: 'Accept or reject the outcome based on verification results only.',
+      instructions: [
+        'Accept only if all required verification stages pass.',
+        decision.review_required ? 'Do not accept the primary output without the mandated review step.' : 'No mandatory review step remains.',
+        'Escalate manually outside Phase 1 if verification still fails after the planned path.',
+      ],
+    });
+
+    return {
+      decision,
+      plan,
+      auditTrail,
+    };
   }
 
   async execute(task: RoutingTask): Promise<ExecutionResult> {
-    const decision = this.router.route(task);
-    const auditTrail: string[] = [`Routed to ${decision.selected_provider}/${decision.selected_model_id}.`];
-    const primaryTierConfig = this.config.tiers[decision.selected_model_tier];
-    const primaryProvider = this.providers[primaryTierConfig.provider];
-
-    if (!primaryProvider) {
-      throw new Error(`Provider not configured: ${primaryTierConfig.provider}`);
-    }
-
-    const initialResponse = await primaryProvider.generate({
-      modelId: primaryTierConfig.modelId,
-      temperature: primaryTierConfig.temperature,
-      maxTokens: primaryTierConfig.maxTokens,
-      messages: buildMessages(SYSTEM_PROMPT, buildTaskPrompt(task)),
-      metadata: {
-        selectedTier: decision.selected_model_tier,
-      },
-      ...(primaryTierConfig.reasoningEffort ? { reasoningEffort: primaryTierConfig.reasoningEffort } : {}),
-    });
-
-    let verification = this.verifier.verify(task, initialResponse.content, decision);
-    let finalResponse = initialResponse;
-    let reviewResponse = undefined;
-    let escalated = decision.escalation_needed;
-
-    if (decision.review_required || decision.escalation_needed || !verification.overallPass) {
-      const reviewTier = this.pickReviewTier(decision.selected_model_tier, !verification.overallPass);
-      const reviewTierConfig = this.config.tiers[reviewTier];
-      const reviewProvider = this.providers[reviewTierConfig.provider];
-
-      if (!reviewProvider) {
-        throw new Error(`Review provider not configured: ${reviewTierConfig.provider}`);
-      }
-
-      auditTrail.push(`Escalated to ${reviewTierConfig.provider}/${reviewTierConfig.modelId} for review.`);
-      reviewResponse = await reviewProvider.generate({
-        modelId: reviewTierConfig.modelId,
-        temperature: reviewTierConfig.temperature,
-        maxTokens: reviewTierConfig.maxTokens,
-        messages: buildMessages(
-          SYSTEM_PROMPT,
-          [
-            'Review and improve the prior answer.',
-            `Original task:\n${buildTaskPrompt(task)}`,
-            `Initial answer:\n${initialResponse.content}`,
-            `Verification report:\n${summarizeVerification(verification)}`,
-            'Return a corrected final answer only.',
-          ].join('\n\n'),
-        ),
-        metadata: {
-          selectedTier: reviewTier,
-        },
-        ...(reviewTierConfig.reasoningEffort ? { reasoningEffort: reviewTierConfig.reasoningEffort } : {}),
-      });
-
-      verification = this.verifier.verify(task, reviewResponse.content, decision);
-      finalResponse = reviewResponse;
-      escalated = true;
-    }
-
-    if (verification.overallPass) {
-      auditTrail.push('Verification passed.');
-    } else {
-      auditTrail.push(`Verification still flagged: ${verification.summary}`);
-    }
-
-    const result: ExecutionResult = {
-      decision,
-      initialResponse,
-      finalResponse,
-      verification,
-      escalated,
-      auditTrail,
-    };
-
-    if (reviewResponse) {
-      result.reviewResponse = reviewResponse;
-    }
-
-    // Emit telemetry event once per execute() call using final outcome state
-    if (this.sink) {
-      const finalOutcome = this.computeFinalOutcome(decision, escalated, verification.overallPass);
-      const tokenUsage = this.computeTokenUsage(finalResponse?.usage);
-
-      const event: TelemetryEvent = {
-        timestamp: new Date().toISOString(),
-        task_class: decision.task_class,
-        selected_provider: decision.selected_provider,
-        selected_model_tier: decision.selected_model_tier,
-        selected_model_id: decision.selected_model_id,
-        confidence: decision.confidence,
-        review_required: decision.review_required,
-        escalation_needed: escalated,
-        verification_pass: verification.overallPass,
-        verification_summary: verification.summary,
-        final_outcome: finalOutcome,
-        task_domain: this.deriveTaskDomain(decision.domain_signals),
-        task_complexity: this.deriveTaskComplexity(decision.confidence),
-      };
-
-      if (tokenUsage) {
-        event.token_usage = tokenUsage;
-      }
-
-      this.sink.append(event);
-    }
-
-    return result;
+    return this.plan(task);
   }
-
-  private pickReviewTier(selectedTier: ModelTier, verificationFailed: boolean): ModelTier {
-    if (selectedTier === 'openai_review') {
-      return 'openai_review';
-    }
-
-    if (verificationFailed || selectedTier === 'openai_reasoning') {
-      return 'openai_review';
-    }
-
-    return 'openai_review';
-  }
-
-  private computeFinalOutcome(
-    decision: { review_required: boolean },
-    escalated: boolean,
-    verificationPassed: boolean,
-  ): FinalOutcome {
-    if (escalated) {
-      return 'escalated';
-    }
-    if (decision.review_required || !verificationPassed) {
-      return 'review_required';
-    }
-    return 'accepted';
-  }
-
-  private computeTokenUsage(usage?: TokenUsage): TokenUsage | undefined {
-    if (!usage || (usage.promptTokens === undefined && usage.completionTokens === undefined && usage.totalTokens === undefined)) {
-      return undefined;
-    }
-    return usage;
-  }
-
-  private deriveTaskDomain(signals: DomainSignals): TaskDomain {
-    if (signals.velociraptor) return 'velo';
-    if (signals.splunk) return 'splunk';
-    if (signals.coding) return 'coding';
-    if (signals.research) return 'research';
-    return 'general';
-  }
-
-  private deriveTaskComplexity(confidence: number): TaskComplexity {
-    const { low, medium } = this.config.confidenceThresholds;
-    if (confidence <= low) return 'high';
-    if (confidence <= medium) return 'medium';
-    return 'low';
-  }
-}
-
-function buildTaskPrompt(task: RoutingTask): string {
-  const lines = [task.prompt.trim()];
-
-  if (task.requirements?.length) {
-    lines.push('Requirements:');
-    for (const requirement of task.requirements) {
-      lines.push(`- ${requirement}`);
-    }
-  }
-
-  if (task.metadata?.expectedArtifact) {
-    lines.push(`Expected artifact: ${task.metadata.expectedArtifact}`);
-  }
-
-  if (task.metadata?.domainHints?.length) {
-    lines.push(`Domain hints: ${task.metadata.domainHints.join(', ')}`);
-  }
-
-  return lines.join('\n');
-}
-
-function summarizeVerification(report: VerificationReport): string {
-  return [
-    report.summary,
-    ...report.checks.map((check) => `${check.name}: ${check.passed ? 'pass' : 'flag'} (${check.details})`),
-  ].join('\n');
 }

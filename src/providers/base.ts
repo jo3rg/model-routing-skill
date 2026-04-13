@@ -3,7 +3,7 @@ import type {
   ProviderMessage,
   ProviderRequest,
   ProviderResponse,
-  ProviderName,
+  RuntimeProviderName,
   TokenUsage,
 } from '../types/index.js';
 
@@ -25,7 +25,7 @@ interface OpenAICompatibleResponse {
 }
 
 export abstract class OpenAICompatibleProvider implements ModelProvider {
-  abstract readonly name: ProviderName;
+  abstract readonly name: RuntimeProviderName;
 
   constructor(
     private readonly apiKey: string,
@@ -66,7 +66,6 @@ export abstract class OpenAICompatibleProvider implements ModelProvider {
 
     const payload = (await response.json()) as OpenAICompatibleResponse;
     const content = coerceContent(payload.choices?.[0]?.message?.content);
-
     const usage = mapUsage(payload.usage);
 
     return {
@@ -86,13 +85,7 @@ function coerceContent(content: OpenAICompatibleContent | undefined): string {
 
   if (Array.isArray(content)) {
     return content
-      .map((item) => {
-        if (typeof item === 'string') {
-          return item;
-        }
-
-        return item.text ?? '';
-      })
+      .map((item) => (typeof item === 'string' ? item : item.text ?? ''))
       .join('')
       .trim();
   }

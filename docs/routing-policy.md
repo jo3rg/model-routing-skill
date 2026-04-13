@@ -3,19 +3,44 @@
 ## Core principles
 
 1. Correctness beats cost.
-2. Deterministic policy beats opaque prompt routing.
-3. Low confidence always escalates to OpenAI.
-4. Medium confidence plus production/security risk requires OpenAI review.
-5. Routing decisions must be inspectable after the fact.
+2. Capability selection happens before model selection.
+3. Deterministic policy beats opaque prompt routing.
+4. Only allowlisted trusted skills may be selected.
+5. Low confidence or high-risk work gets stronger review.
+6. Routing decisions must be inspectable after the fact.
 
-## Task class policy
+## Execution-mode policy
 
-| Task class | Default tier | Why |
-| --- | --- | --- |
-| `bounded_execution` | `minimax_fast` | bounded, low-risk transforms or routine execution |
-| `moderate_technical` | `minimax_general` | coding, debugging, query writing, technical implementation |
-| `reasoning_critical` | `openai_reasoning` | design, investigation, research, root-cause analysis |
-| `final_review_required` | `openai_review` | release review, audit, approval, explicit sign-off |
+| Execution mode | Typical use |
+| --- | --- |
+| `specialized_skill` | strong trusted-skill fit, low-risk bounded work |
+| `specialized_skill_then_openai_review` | trusted skill fit, but policy requires review |
+| `minimax_direct` | bounded general work with no trusted-skill win |
+| `minimax_then_openai_review` | moderate technical work where MiniMax drafts and OpenAI reviews |
+| `openai_direct` | reasoning-critical, low-confidence, or explicit review-heavy work |
+
+## Capability-first policy
+
+The router asks two questions in order:
+
+### 1. Is there a trusted specialized skill that should own this task?
+
+If yes:
+- choose the skill first
+- only add OpenAI review if policy requires it
+
+If no:
+- continue to model-tier selection
+
+### 2. If a model path is needed, which one is safest?
+
+Default model path rules:
+- `bounded_execution` -> `minimax_fast`
+- `moderate_technical` -> `minimax_general`
+- `reasoning_critical` -> `openai_reasoning`
+- `final_review_required` -> `openai_review`
+
+Then execution-mode overrides apply.
 
 ## Confidence thresholds
 
@@ -24,87 +49,72 @@ Default thresholds:
 - medium: `<= 0.74`
 - high: `>= 0.86`
 
-## Escalation rules
+## Trusted skill threshold
 
-### Low confidence
+Default trusted-skill selection threshold:
+- `minimumSkillScore = 0.55`
 
-If routing confidence is low:
-- set `escalation_needed = true`
-- route to OpenAI
-- prefer `openai_reasoning` for research, Splunk, Velociraptor, coding, or debugging
-- otherwise use `openai_general`
+This is intentionally explicit and code-reviewable.
 
-### Medium confidence + risky work
+## Review rules
 
-If confidence is medium-or-lower and the task is:
-- security-sensitive, or
-- production-relevant
+### Trusted skill review
 
-Then:
-- set `review_required = true`
-- prefer `openai_review`
+A trusted skill goes to `specialized_skill_then_openai_review` when any of the following is true:
+- the skill policy says `always`
+- the task class is `final_review_required`
+- the work is security-sensitive
+- the work is production-relevant
+- confidence is below the configured skill-review threshold for non-bounded, non-documentation work
 
-### Final review requested
+### MiniMax review
 
-If the prompt explicitly asks for review/audit/approval/sign-off:
-- classify as `final_review_required`
-- route to `openai_review`
+General model work goes to `minimax_then_openai_review` when:
+- the work is moderate technical rather than trivial
+- or the domain is one that policy prefers to review
+- or coding/debugging review is prudent
+- or production/security policy requires it
+
+### Direct OpenAI
+
+Direct OpenAI is used when:
+- the task is reasoning-critical
+- confidence is low
+- explicit review language dominates the task
+- or deterministic policy says the safest path is to skip MiniMax drafting
 
 ## Domain heuristics
 
-### Velociraptor
+### Documentation
+- prefer `codebase-documenter` when the documentation signal is strong
+- do not force review by confidence alone for bounded docs work
 
-Velociraptor work is treated as specialized DFIR work.
-Policy effect:
-- push toward `moderate_technical` or `reasoning_critical`
-- if confidence falls below high, prefer OpenAI validation
+### Frontend
+- prefer `frontend-design`
+- add review when the task is risky or clearly production-facing
 
-### Splunk
+### GitHub
+- prefer `github` when the task is clearly about PRs, issues, or CI runs
+- add review when the task is high-impact or ambiguous
 
-Splunk/SPL/dashboard work is treated as specialized analytical work.
-Policy effect:
-- never treat it as pure trivial text work
-- if review is needed, prefer OpenAI review
+### DFIR / Splunk / Velociraptor
+- prefer allowlisted DFIR skills when the task is clearly dashboard/validation/strategy work
+- treat production Splunk work as review-sensitive
+- keep post-skill verification mandatory
 
 ### Research
+- usually skip trusted skills unless a research-capable trusted skill is a very strong fit
+- otherwise route directly to OpenAI reasoning
 
-Research triggers stronger reasoning assumptions.
-Policy effect:
-- usually `reasoning_critical`
-- if confidence degrades, prefer `openai_reasoning`
+## Verification plan policy
 
-### Coding / debugging
+Every route returns structured verification stages.
 
-Coding and debugging are often moderate technical tasks.
-Policy effect:
-- route to `minimax_general` when confidence is strong and the task is not obviously risky
-- escalate to OpenAI reasoning on low confidence or failed verification
+Potential stages:
+- `preflight`
+- `post_skill`
+- `post_model`
+- `openai_review`
+- `acceptance`
 
-## Verification gates
-
-Every execution path is expected to support the following checks:
-- requirement coverage
-- internal consistency
-- syntax plausibility
-- ambiguity detection
-- unresolved assumptions
-- domain-specific quality
-- production-safety review
-
-## Review behavior
-
-When review is required or verification fails:
-- preserve the original task
-- preserve the initial answer
-- pass the verification summary into the reviewer
-- produce a corrected final answer
-
-## Audit requirements
-
-Every final result should retain:
-- selected provider
-- selected model tier
-- selected concrete model ID
-- confidence score
-- rationale list
-- verification summary
+Phase 1 expects the downstream system to execute these checks explicitly instead of relying on vague “looks good” acceptance.

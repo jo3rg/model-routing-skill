@@ -1,7 +1,8 @@
+import { selectCapability } from '../capabilities/trustedSkillRegistry.js';
 import { DeterministicTaskClassifier } from '../classifier/deterministicClassifier.js';
 import { DEFAULT_ROUTER_CONFIG } from '../config/defaults.js';
 import { DeterministicEscalator } from '../escalator/deterministicEscalator.js';
-import type { ClassificationResult, ModelTier, RouteDecision, RouterConfig, RoutingTask } from '../types/index.js';
+import type { ClassificationResult, RouteDecision, RouterConfig, RoutingTask, VerificationPlanStep } from '../types/index.js';
 
 export class DeterministicRouter {
   private readonly classifier: DeterministicTaskClassifier;
@@ -14,81 +15,100 @@ export class DeterministicRouter {
 
   route(task: RoutingTask): RouteDecision {
     const classification = this.classifier.classify(task);
-    const escalation = this.escalator.evaluate(classification);
-    const selectedTier = this.selectTier(classification, escalation.recommendedTier);
-    const tierConfig = this.config.tiers[selectedTier];
+    const capability = selectCapability(task, classification, this.config);
+    const escalation = this.escalator.evaluate(classification, capability);
+
+    const selectedModelId = escalation.selectedTier === 'none' ? undefined : this.config.tiers[escalation.selectedTier].modelId;
+    const reviewModelId = escalation.reviewTier ? this.config.tiers[escalation.reviewTier].modelId : undefined;
 
     const rationale = [
+      `Normalized task for deterministic routing: ${classification.normalizedTask.normalized_prompt}.`,
+      `Capability selection ran before model selection and chose ${capability.kind}${capability.selected_skill ? ` (${capability.selected_skill.id})` : ''}.`,
       ...classification.rationale,
       ...escalation.reasons,
-      `Selected tier ${selectedTier} (${tierConfig.provider}/${tierConfig.modelId}) using deterministic policy.`,
+      `Execution mode ${escalation.executionMode} selected for domain ${classification.domain}.`,
     ];
 
     return {
       task_class: classification.taskClass,
-      selected_provider: tierConfig.provider,
-      selected_model_tier: selectedTier,
-      selected_model_id: tierConfig.modelId,
+      domain: classification.domain,
+      execution_mode: escalation.executionMode,
+      selected_provider: escalation.selectedProvider,
+      selected_model_tier: escalation.selectedTier,
+      ...(selectedModelId ? { selected_model_id: selectedModelId } : {}),
+      ...(capability.selected_skill ? { selected_skill_id: capability.selected_skill.id } : {}),
+      ...(escalation.reviewProvider ? { review_provider: escalation.reviewProvider } : {}),
+      ...(escalation.reviewTier ? { review_model_tier: escalation.reviewTier } : {}),
+      ...(reviewModelId ? { review_model_id: reviewModelId } : {}),
       confidence: classification.confidence,
       review_required: escalation.reviewRequired,
       escalation_needed: escalation.escalationNeeded,
       rationale,
-      verification_summary: this.buildVerificationSummary(classification, escalation.reviewRequired),
+      verification_plan: this.buildVerificationPlan(task, classification, capability.selected_skill?.id, escalation.reviewRequired),
       matched_rules: classification.matchedRules,
       domain_signals: classification.domainSignals,
+      normalized_task: classification.normalizedTask,
+      capability_selection: {
+        kind: capability.kind,
+        score: capability.score,
+        ...(capability.selected_skill ? { skill_id: capability.selected_skill.id } : {}),
+        candidates: capability.candidates,
+      },
     };
   }
 
-  private selectTier(classification: ClassificationResult, recommendedTier?: ModelTier): ModelTier {
-    if (recommendedTier === 'openai_review') {
-      return 'openai_review';
-    }
-
-    if (classification.taskClass === 'final_review_required') {
-      return 'openai_review';
-    }
-
-    if (classification.taskClass === 'reasoning_critical') {
-      return recommendedTier ?? 'openai_reasoning';
-    }
-
-    if (recommendedTier) {
-      return recommendedTier;
-    }
-
-    if (classification.taskClass === 'moderate_technical') {
-      if (classification.domainSignals.securitySensitive || classification.domainSignals.productionRelevant) {
-        return 'openai_general';
-      }
-
-      return classification.domainSignals.coding || classification.domainSignals.debugging
-        ? 'minimax_general'
-        : 'minimax_fast';
-    }
-
-    if (classification.taskClass === 'bounded_execution') {
-      return 'minimax_fast';
-    }
-
-    return 'openai_general';
-  }
-
-  private buildVerificationSummary(classification: ClassificationResult, reviewRequired: boolean): string {
-    const checks = [
-      'requirement coverage',
-      'internal consistency',
-      'syntax plausibility',
-      'ambiguity detection',
-      'unresolved assumptions',
-      'domain-specific quality',
-      'production-safety review',
+  private buildVerificationPlan(
+    task: RoutingTask,
+    classification: ClassificationResult,
+    selectedSkillId: string | undefined,
+    reviewRequired: boolean,
+  ): VerificationPlanStep[] {
+    const plan: VerificationPlanStep[] = [
+      {
+        phase: 'preflight',
+        name: 'policy-preflight',
+        description: 'Confirm the normalized task, allowlist status, and explicit requirements before execution.',
+        required: true,
+        checks: ['requirement_coverage', 'internal_consistency'],
+      },
     ];
 
-    const domains = Object.entries(classification.domainSignals)
-      .filter(([, value]) => value)
-      .map(([key]) => key)
-      .join(', ') || 'generic';
+    if (selectedSkillId) {
+      plan.push({
+        phase: 'post_skill',
+        name: 'trusted-skill-output-verification',
+        description: `After ${selectedSkillId} runs, verify the skill output contract and the handoff details before accepting it.`,
+        required: true,
+        checks: ['requirement_coverage', 'domain_specific_quality', 'skill_output_contract', 'post_skill_handoff_quality', 'production_safety_review'],
+      });
+    } else {
+      plan.push({
+        phase: 'post_model',
+        name: 'primary-model-verification',
+        description: 'Verify the primary model output for requirement coverage, ambiguity, and domain quality.',
+        required: true,
+        checks: ['requirement_coverage', 'syntax_plausibility', 'ambiguity_detection', 'unresolved_assumptions', 'domain_specific_quality', 'production_safety_review'],
+      });
+    }
 
-    return `${reviewRequired ? 'OpenAI review required. ' : ''}Run ${checks.join(', ')} checks with domain focus: ${domains}.`;
+    if (reviewRequired) {
+      plan.push({
+        phase: 'openai_review',
+        name: 'openai-review-gate',
+        description: 'Run an OpenAI review pass using the verification findings and require a corrected final answer.',
+        required: true,
+        checks: ['requirement_coverage', 'internal_consistency', 'ambiguity_detection', 'unresolved_assumptions', 'domain_specific_quality', 'production_safety_review'],
+      });
+    }
+
+    plan.push({
+      phase: 'acceptance',
+      name: 'final-acceptance',
+      description: `Accept only if the output satisfies the domain contract (${classification.domain}) and all required verification stages pass${task.metadata?.expectedArtifact ? ` for ${task.metadata.expectedArtifact}` : ''}.`,
+      required: true,
+      checks: ['requirement_coverage', 'internal_consistency', 'domain_specific_quality', 'production_safety_review'],
+    });
+
+    return plan;
   }
 }

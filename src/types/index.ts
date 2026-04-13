@@ -1,11 +1,15 @@
-export type ProviderName = 'minimax' | 'openai';
+export type ProviderName = 'minimax' | 'openai' | 'trusted_skill';
+export type RuntimeProviderName = Exclude<ProviderName, 'trusted_skill'>;
 
 export type ModelTier =
+  | 'none'
   | 'minimax_fast'
   | 'minimax_general'
   | 'openai_general'
   | 'openai_reasoning'
   | 'openai_review';
+
+export type ConfiguredModelTier = Exclude<ModelTier, 'none'>;
 
 export type TaskClass =
   | 'bounded_execution'
@@ -13,12 +17,34 @@ export type TaskClass =
   | 'reasoning_critical'
   | 'final_review_required';
 
+export type TaskDomain =
+  | 'general'
+  | 'engineering'
+  | 'documentation'
+  | 'frontend'
+  | 'github'
+  | 'research'
+  | 'security_ops'
+  | 'dfir_splunk'
+  | 'dfir_velociraptor';
+
+export type ExecutionMode =
+  | 'specialized_skill'
+  | 'specialized_skill_then_openai_review'
+  | 'minimax_direct'
+  | 'minimax_then_openai_review'
+  | 'openai_direct';
+
+export type ExpectedArtifact = 'text' | 'code' | 'json' | 'yaml' | 'spl' | 'vql' | 'research' | 'docs' | 'plan';
+
 export interface TaskMetadata {
   securitySensitive?: boolean;
   productionRelevant?: boolean;
   finalReviewRequested?: boolean;
   domainHints?: string[];
-  expectedArtifact?: 'text' | 'code' | 'json' | 'yaml' | 'spl' | 'vql' | 'research';
+  expectedArtifact?: ExpectedArtifact;
+  allowedSkillIds?: string[];
+  disallowedSkillIds?: string[];
 }
 
 export interface RoutingTask {
@@ -27,12 +53,25 @@ export interface RoutingTask {
   metadata?: TaskMetadata;
 }
 
+export interface NormalizedTask {
+  original_prompt: string;
+  normalized_prompt: string;
+  compact_prompt: string;
+  verb_hints: string[];
+  noun_hints: string[];
+  requested_artifacts: ExpectedArtifact[];
+  explicit_review_requested: boolean;
+}
+
 export interface DomainSignals {
   splunk: boolean;
   velociraptor: boolean;
   research: boolean;
   coding: boolean;
   debugging: boolean;
+  documentation: boolean;
+  frontend: boolean;
+  github: boolean;
   securitySensitive: boolean;
   productionRelevant: boolean;
   finalReviewRequested: boolean;
@@ -42,15 +81,17 @@ export type DomainSignalName = keyof DomainSignals;
 
 export interface ClassificationResult {
   taskClass: TaskClass;
+  domain: TaskDomain;
   confidence: number;
   rationale: string[];
   matchedRules: string[];
   domainSignals: DomainSignals;
+  normalizedTask: NormalizedTask;
   scorecard: Record<TaskClass, number>;
 }
 
 export interface TierConfig {
-  provider: ProviderName;
+  provider: RuntimeProviderName;
   modelId: string;
   temperature: number;
   maxTokens: number;
@@ -63,14 +104,72 @@ export interface ProviderConfig {
   defaultHeaders?: Record<string, string>;
 }
 
+export type VerificationCheckName =
+  | 'requirement_coverage'
+  | 'internal_consistency'
+  | 'syntax_plausibility'
+  | 'ambiguity_detection'
+  | 'unresolved_assumptions'
+  | 'domain_specific_quality'
+  | 'production_safety_review'
+  | 'skill_output_contract'
+  | 'post_skill_handoff_quality';
+
+export interface TrustedSkillMetadata {
+  id: string;
+  displayName: string;
+  description: string;
+  owner: string;
+  location: string;
+  version: string;
+  domains: TaskDomain[];
+  triggerPhrases: string[];
+  artifactFocus: ExpectedArtifact[];
+  reviewPreference: 'never' | 'conditional' | 'always';
+  riskTags: string[];
+  verificationFocus: VerificationCheckName[];
+  handoffRequirements: string[];
+  examples: string[];
+  enabled: boolean;
+}
+
+export interface CapabilityCandidate {
+  kind: 'trusted_skill' | 'model';
+  skill_id?: string;
+  score: number;
+  reasons: string[];
+}
+
+export interface CapabilitySelection {
+  kind: 'trusted_skill' | 'model';
+  score: number;
+  reasons: string[];
+  selected_skill?: TrustedSkillMetadata;
+  candidates: CapabilityCandidate[];
+}
+
+export interface VerificationPlanStep {
+  phase: 'preflight' | 'post_skill' | 'post_model' | 'openai_review' | 'acceptance';
+  name: string;
+  description: string;
+  required: boolean;
+  checks: VerificationCheckName[];
+}
+
 export interface RouterConfig {
   confidenceThresholds: {
     low: number;
     medium: number;
     high: number;
   };
-  tiers: Record<ModelTier, TierConfig>;
-  providers: Record<ProviderName, ProviderConfig>;
+  tiers: Record<ConfiguredModelTier, TierConfig>;
+  providers: Record<RuntimeProviderName, ProviderConfig>;
+  trustedSkills: TrustedSkillMetadata[];
+  capabilityPolicy: {
+    minimumSkillScore: number;
+    reviewSkillAtConfidenceOrBelow: number;
+    preferOpenAIForReasoningAtConfidenceOrBelow: number;
+  };
   escalationPolicy: {
     securityReviewAtConfidenceOrBelow: number;
     productionReviewAtConfidenceOrBelow: number;
@@ -81,21 +180,35 @@ export interface RouterConfig {
     ambiguityPhrases: string[];
     weakAssumptionPhrases: string[];
     unsafeShellPatterns: string[];
+    skillHandoffPhrases: string[];
   };
 }
 
 export interface RouteDecision {
   task_class: TaskClass;
+  domain: TaskDomain;
+  execution_mode: ExecutionMode;
   selected_provider: ProviderName;
   selected_model_tier: ModelTier;
-  selected_model_id: string;
+  selected_model_id?: string;
+  selected_skill_id?: string;
+  review_provider?: RuntimeProviderName;
+  review_model_tier?: ConfiguredModelTier;
+  review_model_id?: string;
   confidence: number;
   review_required: boolean;
   escalation_needed: boolean;
   rationale: string[];
-  verification_summary: string;
+  verification_plan: VerificationPlanStep[];
   matched_rules: string[];
   domain_signals: DomainSignals;
+  normalized_task: NormalizedTask;
+  capability_selection: {
+    kind: 'trusted_skill' | 'model';
+    score: number;
+    skill_id?: string;
+    candidates: CapabilityCandidate[];
+  };
 }
 
 export interface ProviderMessage {
@@ -119,10 +232,6 @@ export interface TokenUsage {
   totalTokens?: number;
 }
 
-export type TaskDomain = 'velo' | 'splunk' | 'coding' | 'research' | 'general';
-
-export type TaskComplexity = 'high' | 'medium' | 'low';
-
 export type FinalOutcome = 'accepted' | 'escalated' | 'review_required';
 
 export interface TelemetryEvent {
@@ -130,7 +239,7 @@ export interface TelemetryEvent {
   task_class: TaskClass;
   selected_provider: ProviderName;
   selected_model_tier: ModelTier;
-  selected_model_id: string;
+  selected_model_id?: string;
   confidence: number;
   review_required: boolean;
   escalation_needed: boolean;
@@ -139,11 +248,13 @@ export interface TelemetryEvent {
   token_usage?: TokenUsage;
   final_outcome: FinalOutcome;
   task_domain: TaskDomain;
-  task_complexity: TaskComplexity;
+  task_complexity: 'high' | 'medium' | 'low';
+  execution_mode: ExecutionMode;
+  selected_skill_id?: string;
 }
 
 export interface ProviderResponse {
-  provider: ProviderName;
+  provider: RuntimeProviderName;
   modelId: string;
   content: string;
   usage?: TokenUsage;
@@ -151,14 +262,7 @@ export interface ProviderResponse {
 }
 
 export interface VerificationCheckResult {
-  name:
-    | 'requirement_coverage'
-    | 'internal_consistency'
-    | 'syntax_plausibility'
-    | 'ambiguity_detection'
-    | 'unresolved_assumptions'
-    | 'domain_specific_quality'
-    | 'production_safety_review';
+  name: VerificationCheckName;
   passed: boolean;
   score: number;
   details: string;
@@ -169,30 +273,41 @@ export interface VerificationReport {
   overallPass: boolean;
   score: number;
   summary: string;
-  failedChecks: string[];
-  warnings: string[];
+  failedChecks: VerificationCheckName[];
+  warnings: VerificationCheckName[];
   checks: VerificationCheckResult[];
 }
 
 export interface EscalationDecision {
-  escalationNeeded: boolean;
+  executionMode: ExecutionMode;
   reviewRequired: boolean;
-  recommendedTier?: ModelTier;
+  escalationNeeded: boolean;
+  selectedTier: ModelTier;
+  selectedProvider: ProviderName;
+  reviewTier?: ConfiguredModelTier;
+  reviewProvider?: RuntimeProviderName;
   reasons: string[];
+}
+
+export interface ExecutionPlanStepResult {
+  step: number;
+  actor: ProviderName | 'system';
+  phase: VerificationPlanStep['phase'] | 'primary';
+  title: string;
+  objective: string;
+  tier?: ModelTier;
+  skill_id?: string;
+  instructions: string[];
 }
 
 export interface ExecutionResult {
   decision: RouteDecision;
-  initialResponse?: ProviderResponse;
-  reviewResponse?: ProviderResponse;
-  finalResponse?: ProviderResponse;
-  verification: VerificationReport;
-  escalated: boolean;
+  plan: ExecutionPlanStepResult[];
   auditTrail: string[];
 }
 
 export interface ModelProvider {
-  name: ProviderName;
+  name: RuntimeProviderName;
   generate(request: ProviderRequest): Promise<ProviderResponse>;
 }
 

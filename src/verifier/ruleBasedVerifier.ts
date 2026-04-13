@@ -1,3 +1,4 @@
+import { findTrustedSkillById } from '../capabilities/trustedSkillRegistry.js';
 import { DEFAULT_ROUTER_CONFIG } from '../config/defaults.js';
 import type {
   RouteDecision,
@@ -20,10 +21,15 @@ export class RuleBasedVerifier {
     checks.push(this.domainSpecificQuality(task, responseText, decision));
     checks.push(this.productionSafetyReview(responseText));
 
+    if (decision?.selected_skill_id) {
+      checks.push(this.skillOutputContract(task, responseText, decision));
+      checks.push(this.postSkillHandoffQuality(responseText, decision));
+    }
+
     const score = Number((checks.reduce((sum, check) => sum + check.score, 0) / checks.length).toFixed(2));
     const failedChecks = checks.filter((check) => !check.passed && check.severity === 'error').map((check) => check.name);
     const warnings = checks.filter((check) => !check.passed && check.severity !== 'error').map((check) => check.name);
-    const overallPass = failedChecks.length === 0 && score >= 0.68;
+    const overallPass = failedChecks.length === 0 && score >= 0.7;
     const summary = overallPass
       ? `Verification passed at ${score}. Strongest checks: ${checks.filter((check) => check.passed).map((check) => check.name).join(', ')}.`
       : `Verification flagged issues at ${score}. Failed checks: ${[...failedChecks, ...warnings].join(', ')}.`;
@@ -44,7 +50,7 @@ export class RuleBasedVerifier {
       return {
         name: 'requirement_coverage',
         passed: responseText.trim().length > 0,
-        score: responseText.trim().length > 0 ? 0.8 : 0.2,
+        score: responseText.trim().length > 0 ? 0.82 : 0.2,
         details: 'No explicit requirements list detected; used non-empty response heuristic.',
         severity: 'warning',
       };
@@ -73,7 +79,7 @@ export class RuleBasedVerifier {
 
   private internalConsistency(responseText: string): VerificationCheckResult {
     const contradictions = detectContradictions(responseText);
-    const score = contradictions.length === 0 ? 0.88 : Math.max(0.2, 0.88 - contradictions.length * 0.25);
+    const score = contradictions.length === 0 ? 0.9 : Math.max(0.2, 0.9 - contradictions.length * 0.25);
 
     return {
       name: 'internal_consistency',
@@ -85,7 +91,7 @@ export class RuleBasedVerifier {
   }
 
   private syntaxPlausibility(task: RoutingTask, responseText: string): VerificationCheckResult {
-    let score = 0.85;
+    let score = 0.86;
     const details: string[] = [];
 
     if (countOccurrences(responseText, '```') % 2 !== 0) {
@@ -132,7 +138,7 @@ export class RuleBasedVerifier {
     const matches = this.config.verification.ambiguityPhrases.filter((phrase) => lowered.includes(phrase));
     const strict = decision?.domain_signals.productionRelevant || decision?.domain_signals.securitySensitive;
     const allowed = strict ? 1 : 3;
-    const score = Math.max(0.2, 0.9 - matches.length * 0.12);
+    const score = Math.max(0.2, 0.92 - matches.length * 0.12);
 
     return {
       name: 'ambiguity_detection',
@@ -161,7 +167,7 @@ export class RuleBasedVerifier {
     const source = `${task.prompt}\n${responseText}`.toLowerCase();
     const domains = decision?.domain_signals;
     const issues: string[] = [];
-    let score = 0.85;
+    let score = 0.87;
 
     if (domains?.splunk || /\bsplunk\b|\bspl\b/.test(source)) {
       if (!/(index=|\|\s*(stats|tstats|table|eval|search|where))/i.test(responseText)) {
@@ -184,10 +190,17 @@ export class RuleBasedVerifier {
       }
     }
 
-    if ((domains?.coding || domains?.debugging) || /\bcode\b|\bdebug\b|\bfix\b/.test(source)) {
-      if (!(/```/.test(responseText) || /\btest\b|\bfile\b|\bfunction\b|\bline\b/i.test(responseText))) {
-        issues.push('Coding/debugging output lacks code, file references, or testing cues.');
+    if ((domains?.coding || domains?.debugging || domains?.frontend) || /\bcode\b|\bdebug\b|\bfix\b|\bcomponent\b/.test(source)) {
+      if (!(/```/.test(responseText) || /\btest\b|\bfile\b|\bfunction\b|\bline\b|\bcomponent\b/i.test(responseText))) {
+        issues.push('Coding/frontend output lacks code, file references, or testing cues.');
         score -= 0.25;
+      }
+    }
+
+    if (domains?.documentation || /\breadme\b|\bdocument\b|\bguide\b/.test(source)) {
+      if (!(/\bsection\b|\breadme\b|\bgetting started\b|\binstallation\b|\busage\b/i.test(responseText))) {
+        issues.push('Documentation output lacks sectioning or guide structure.');
+        score -= 0.2;
       }
     }
 
@@ -204,7 +217,7 @@ export class RuleBasedVerifier {
     const lowered = responseText.toLowerCase();
     const matches = this.config.verification.unsafeShellPatterns.filter((pattern) => lowered.includes(pattern));
     const additionalRisk = /(disable (auth|authentication)|trust all|allow all|everyone full access)/i.test(responseText);
-    const score = matches.length === 0 && !additionalRisk ? 0.92 : Math.max(0.1, 0.92 - (matches.length + Number(additionalRisk)) * 0.28);
+    const score = matches.length === 0 && !additionalRisk ? 0.94 : Math.max(0.1, 0.94 - (matches.length + Number(additionalRisk)) * 0.28);
 
     return {
       name: 'production_safety_review',
@@ -215,6 +228,63 @@ export class RuleBasedVerifier {
           ? 'No high-risk production safety markers detected.'
           : `Unsafe patterns detected: ${[...matches, ...(additionalRisk ? ['broad insecure recommendation'] : [])].join(', ')}`,
       severity: 'error',
+    };
+  }
+
+  private skillOutputContract(task: RoutingTask, responseText: string, decision: RouteDecision): VerificationCheckResult {
+    const skill = findTrustedSkillById(decision.selected_skill_id ?? '', this.config);
+    const issues: string[] = [];
+    let score = 0.9;
+
+    if (!skill) {
+      return {
+        name: 'skill_output_contract',
+        passed: false,
+        score: 0.2,
+        details: 'Selected skill was not found in the trusted allowlist at verification time.',
+        severity: 'error',
+      };
+    }
+
+    const lowered = responseText.toLowerCase();
+    const handoffHits = skill.handoffRequirements.filter((phrase) => lowered.includes(phrase.toLowerCase()));
+    if (handoffHits.length < Math.min(2, skill.handoffRequirements.length)) {
+      issues.push(`Trusted skill output is missing expected handoff details for ${skill.id}.`);
+      score -= 0.35;
+    }
+
+    if (task.metadata?.expectedArtifact === 'docs' && !/\breadme\b|\bsection\b|\bguide\b/i.test(responseText)) {
+      issues.push('Documentation-oriented skill output lacks document structure markers.');
+      score -= 0.2;
+    }
+
+    if (task.metadata?.expectedArtifact === 'plan' && !/\bnext steps\b|\bdecision\b|\bworkflow\b|\bplan\b/i.test(responseText)) {
+      issues.push('Plan-oriented skill output lacks explicit planning structure.');
+      score -= 0.2;
+    }
+
+    return {
+      name: 'skill_output_contract',
+      passed: score >= 0.6,
+      score: Number(Math.max(0.1, score).toFixed(2)),
+      details: issues.length === 0 ? `Trusted skill output matches the expected ${skill.id} contract.` : issues.join(' '),
+      severity: 'error',
+    };
+  }
+
+  private postSkillHandoffQuality(responseText: string, decision: RouteDecision): VerificationCheckResult {
+    const lowered = responseText.toLowerCase();
+    const matches = this.config.verification.skillHandoffPhrases.filter((phrase) => lowered.includes(phrase));
+    const score = Math.min(0.95, 0.45 + matches.length * 0.12);
+
+    return {
+      name: 'post_skill_handoff_quality',
+      passed: matches.length >= 2,
+      score: Number(score.toFixed(2)),
+      details: matches.length >= 2
+        ? `Skill handoff includes verification cues for ${decision.selected_skill_id}.`
+        : `Skill handoff is too thin; found only: ${matches.join(', ') || 'no expected handoff cues'}.`,
+      severity: 'warning',
     };
   }
 }
