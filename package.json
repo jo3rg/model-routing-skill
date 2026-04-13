@@ -1,0 +1,35 @@
+{
+  "name": "model-routing-skill",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic, auditable MiniMax/OpenAI routing skill repository for OpenClaw",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "docs",
+    "examples",
+    "skill",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist coverage",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run lint && npm run test",
+    "example:basic": "tsx examples/basic-routing.ts",
+    "example:execute": "tsx examples/mock-execution.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.1"
+  }
+}
