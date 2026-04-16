@@ -67,6 +67,7 @@ export interface DomainSignals {
   splunk: boolean;
   velociraptor: boolean;
   research: boolean;
+  investigation: boolean;
   coding: boolean;
   debugging: boolean;
   documentation: boolean;

@@ -35,4 +35,35 @@ describe('DeterministicTaskClassifier', () => {
     expect(result.domain).toBe('research');
     expect(result.domainSignals.research).toBe(true);
   });
+
+  it('classifies investigation-style noun phrases as reasoning_critical', () => {
+    const result = classifier.classify({
+      prompt: 'Do a codebase analysis and multi-step diagnosis of the routing logic, including bypassed rules.',
+    });
+
+    expect(result.taskClass).toBe('reasoning_critical');
+    expect(result.domain).toBe('research');
+    expect(result.domainSignals.investigation).toBe(true);
+    expect(result.scorecard.reasoning_critical).toBeGreaterThan(result.scorecard.moderate_technical);
+  });
+
+  it('does not treat generic issue wording as a GitHub task', () => {
+    const result = classifier.classify({
+      prompt: 'The issue: do a diagnosis and analysis of why routing picks the wrong provider.',
+    });
+
+    expect(result.domainSignals.github).toBe(false);
+    expect(result.domain).toBe('research');
+    expect(result.taskClass).toBe('reasoning_critical');
+  });
+
+  it('does not let script file paths outweigh investigation-style work', () => {
+    const result = classifier.classify({
+      prompt: 'Analyze scripts/route-task.js and perform a diagnosis of the routing behavior.',
+    });
+
+    expect(result.domainSignals.investigation).toBe(true);
+    expect(result.taskClass).toBe('reasoning_critical');
+    expect(result.scorecard.reasoning_critical).toBeGreaterThan(result.scorecard.moderate_technical);
+  });
 });

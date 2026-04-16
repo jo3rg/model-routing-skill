@@ -58,6 +58,10 @@ export class DeterministicTaskClassifier {
       apply('research-domain', 'reasoning_critical', 5, 'Research tasks require synthesis and trade-off analysis.');
     }
 
+    if (domainSignals.investigation) {
+      apply('investigation-domain', 'reasoning_critical', 6, 'Investigation and diagnosis tasks require careful reasoning, synthesis, and root-cause analysis.');
+    }
+
     if (domainSignals.splunk || domainSignals.velociraptor) {
       apply('specialized-dfir-domain', 'moderate_technical', 4, 'Splunk/Velociraptor work is specialized and technical.');
       apply('specialized-dfir-reasoning', 'reasoning_critical', 2, 'DFIR work usually needs careful reasoning and verification.');
@@ -71,11 +75,28 @@ export class DeterministicTaskClassifier {
       apply('documentation-domain', 'bounded_execution', 2, 'Documentation work is often structured and bounded.');
     }
 
-    if (matchesAny(normalizedTask.compact_prompt, ['analyze', 'compare', 'trade-off', 'root cause', 'investigate', 'architecture', 'design', 'strategy', 'benchmark'])) {
-      apply('deep-analysis-language', 'reasoning_critical', 4, 'Prompt asks for analysis, design, or investigation.');
+    if (matchesAny(normalizedTask.compact_prompt, [
+      'analyze',
+      'analysis',
+      'codebase analysis',
+      'compare',
+      'trade-off',
+      'root cause',
+      'investigate',
+      'investigation',
+      'diagnose',
+      'diagnosis',
+      'bypassed rules',
+      'architecture',
+      'design',
+      'strategy',
+      'benchmark',
+      'multi-step diagnosis',
+    ])) {
+      apply('deep-analysis-language', 'reasoning_critical', 5, 'Prompt asks for analysis, diagnosis, or investigation.');
     }
 
-    if (matchesAny(normalizedTask.compact_prompt, ['implement', 'fix', 'refactor', 'write', 'configure', 'script', 'query', 'test', 'validate'])) {
+    if (matchesAny(normalizedTask.compact_prompt, ['implement', 'fix', 'refactor', 'write', 'configure', 'query', 'test', 'validate'])) {
       apply('implementation-language', 'moderate_technical', 3, 'Prompt requests implementation or technical execution.');
     }
 
@@ -113,11 +134,12 @@ function detectDomainSignals(compactPrompt: string, task: RoutingTask): DomainSi
     splunk: /\bsplunk\b|\bspl\b|index=|\|\s*(stats|tstats|table|eval|where|search)\b/.test(compactPrompt),
     velociraptor: /\bvelociraptor\b|\bvql\b|\bartifact\b|client collection|hunt\b/.test(compactPrompt),
     research: /\bresearch\b|\bsurvey\b|\bcite\b|\bpaper\b|\bliterature\b|\bcompare\b|\bbenchmark\b/.test(compactPrompt),
+    investigation: /\binvestigate\b|\binvestigation\b|\banalyze\b|\banalysis\b|\bdiagnose\b|\bdiagnosis\b|\broot cause\b|\bcodebase analysis\b|\bmulti-step diagnosis\b|\bbypassed rules\b/.test(compactPrompt),
     coding: /\btypescript\b|\bjavascript\b|\bpython\b|\bjava\b|\bgo\b|\brefactor\b|\bcompile\b|\bfunction\b|\bcode\b/.test(compactPrompt),
     debugging: /\bdebug\b|\bbug\b|\berror\b|\bfailing\b|\bstack trace\b|\bfix\b|\bregression\b/.test(compactPrompt),
     documentation: /\breadme\b|\bdocument\b|\bguide\b|\bdocs\b|\bcomment\b/.test(compactPrompt),
     frontend: /\breact\b|\bnext\.js\b|\btailwind\b|\bfrontend\b|\bui\b|\blanding page\b|\bcomponent\b/.test(compactPrompt),
-    github: /\bgithub\b|\bpull request\b|\bpr\b|\bissue\b|\bgh cli\b|\bci run\b/.test(compactPrompt),
+    github: /\bgithub\b|\bpull request\b|\bpr\b|\bissues?\s+#?\d+\b|\bgithub issue\b|\bgh cli\b|\bci run\b/.test(compactPrompt),
     securitySensitive:
       task.metadata?.securitySensitive ?? /\bsecurity\b|\bsecret\b|\bcredential\b|\btoken\b|\bauth\b|\bpermission\b|\bssh\b|\bfirewall\b|\bencrypt\b|\bhardening\b/.test(compactPrompt),
     productionRelevant:
@@ -131,10 +153,10 @@ function deriveDomain(domainSignals: DomainSignals): TaskDomain {
   if (domainSignals.splunk) return 'dfir_splunk';
   if (domainSignals.velociraptor) return 'dfir_velociraptor';
   if (domainSignals.securitySensitive) return 'security_ops';
+  if (domainSignals.investigation || domainSignals.research) return 'research';
   if (domainSignals.github) return 'github';
   if (domainSignals.frontend) return 'frontend';
   if (domainSignals.documentation) return 'documentation';
-  if (domainSignals.research) return 'research';
   if (domainSignals.coding || domainSignals.debugging) return 'engineering';
   return 'general';
 }

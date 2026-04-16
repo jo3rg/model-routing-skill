@@ -17,7 +17,7 @@ export const DEFAULT_TRUSTED_SKILLS: TrustedSkillMetadata[] = [
     location: '~/.openclaw/workspace/skills/dfir-dashboard-designer/SKILL.md',
     version: 'phase1',
     domains: ['dfir_splunk', 'dfir_velociraptor'],
-    triggerPhrases: ['splunk dashboard', 'dashboard xml', 'spl query', 'splunk panel', 'velociraptor artifact mapping', 'widget layout'],
+    triggerPhrases: ['splunk dashboard', 'dashboard xml', 'spl query', 'splunk panel', 'panel query plan', 'dashboard layout', 'velociraptor artifact mapping', 'widget layout'],
     artifactFocus: ['spl', 'yaml', 'plan'],
     reviewPreference: 'conditional',
     riskTags: ['dfir', 'splunk', 'velociraptor'],
